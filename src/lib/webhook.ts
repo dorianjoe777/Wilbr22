@@ -1,4 +1,5 @@
-import { supabase } from './supabase';
+import type { SupabaseClient } from '@supabase/supabase-js';
+import type { Database } from './database.types';
 import type { Chat, Contact } from './types';
 
 export interface WhatsAppMessage {
@@ -89,7 +90,10 @@ interface ProcessResult {
 /**
  * Process incoming webhook events from WhatsApp Business API
  */
-export async function processWebhookEvent(event: WhatsAppWebhook): Promise<ProcessResult> {
+export async function processWebhookEvent(
+  event: WhatsAppWebhook,
+  supabase: SupabaseClient<Database>
+): Promise<ProcessResult> {
   try {
     if (event.object !== 'whatsapp_business_account') {
       return { success: false, error: 'Invalid webhook object type' };
@@ -98,9 +102,9 @@ export async function processWebhookEvent(event: WhatsAppWebhook): Promise<Proce
     for (const entry of event.entry) {
       for (const change of entry.changes) {
         if (change.field === 'messages') {
-          await processMessages(change.value);
+          await processMessages(change.value, supabase);
         } else if (change.field === 'message_status') {
-          await processStatusUpdates(change.value);
+          await processStatusUpdates(change.value, supabase);
         }
       }
     }
@@ -115,14 +119,17 @@ export async function processWebhookEvent(event: WhatsAppWebhook): Promise<Proce
 /**
  * Process incoming messages
  */
-async function processMessages(value: MessageValue): Promise<void> {
+async function processMessages(
+  value: MessageValue,
+  supabase: SupabaseClient<Database>
+): Promise<void> {
   const messages = value.messages || [];
   const contacts = value.contacts || [];
 
   for (const message of messages) {
     try {
       // Get or create contact
-      const contact = await getOrCreateContact(message.from, contacts);
+      const contact = await getOrCreateContact(message.from, contacts, supabase);
       if (!contact) continue;
 
       // Process the message based on its type
@@ -154,7 +161,8 @@ async function processMessages(value: MessageValue): Promise<void> {
  */
 async function getOrCreateContact(
   phoneNumber: string,
-  contacts: WhatsAppContact[]
+  contacts: WhatsAppContact[],
+  supabase: SupabaseClient<Database>
 ): Promise<Contact | null> {
   try {
     // Try to find existing contact
@@ -245,7 +253,10 @@ async function extractMessageContent(message: WhatsAppMessage): Promise<string> 
 /**
  * Process message status updates
  */
-async function processStatusUpdates(value: MessageValue): Promise<void> {
+async function processStatusUpdates(
+  value: MessageValue,
+  supabase: SupabaseClient<Database>
+): Promise<void> {
   const statuses = value.statuses || [];
 
   for (const status of statuses) {
