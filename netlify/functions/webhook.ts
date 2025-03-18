@@ -31,7 +31,7 @@ export default async (req: Request, context: Context) => {
       const { data: config, error } = await supabase
         .from('configurations')
         .select('value')
-        .eq('key', 'TOKEN_META')
+        .eq('key', 'VERIFY_TOKEN')
         .single();
 
       if (error) {
@@ -42,7 +42,7 @@ export default async (req: Request, context: Context) => {
       const verifyToken = config?.value;
       
       if (!verifyToken) {
-        console.error('TOKEN_META not configured in Supabase');
+        console.error('VERIFY_TOKEN not configured in Supabase');
         return new Response('Configuration Error', { status: 500 });
       }
 

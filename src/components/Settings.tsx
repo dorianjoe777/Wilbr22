@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { useChatStore } from '../lib/store';
-import { Save, Check, AlertCircle } from 'lucide-react';
+import { Save, Check, AlertCircle, Copy } from 'lucide-react';
 
 interface Config {
   id: string;
@@ -16,6 +16,9 @@ export function Settings() {
   const [savingStates, setSavingStates] = useState<Record<string, boolean>>({});
   const [saveSuccess, setSaveSuccess] = useState<Record<string, boolean>>({});
   const { assistantEnabled, toggleAssistant } = useChatStore();
+  const [copied, setCopied] = useState(false);
+
+  const webhookUrl = `${window.location.protocol}//${window.location.host}/.netlify/functions/webhook`;
 
   useEffect(() => {
     fetchConfigs();
@@ -70,6 +73,16 @@ export function Settings() {
     }
   }
 
+  const copyToClipboard = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      console.error('Failed to copy text: ', err);
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-full">
@@ -77,6 +90,14 @@ export function Settings() {
       </div>
     );
   }
+
+  // Group configurations by type
+  const tokenConfigs = configs.filter(config => 
+    ['VERIFY_TOKEN', 'ACCESS_TOKEN'].includes(config.key)
+  );
+  const otherConfigs = configs.filter(config => 
+    !['VERIFY_TOKEN', 'ACCESS_TOKEN'].includes(config.key)
+  );
 
   return (
     <div className="p-6 max-w-4xl mx-auto">
@@ -106,29 +127,82 @@ export function Settings() {
         <div className="mb-6 p-4 bg-white rounded-lg shadow">
           <div className="flex items-start gap-3">
             <AlertCircle className="w-5 h-5 text-blue-500 mt-1 flex-shrink-0" />
-            <div>
+            <div className="flex-1">
               <h2 className="text-lg font-semibold">Webhook Configuration</h2>
               <p className="text-gray-600 mt-1">
-                Your webhook endpoint for the Azure Function is:
+                Your webhook endpoint for WhatsApp Business API is:
               </p>
-              <code className="block bg-gray-100 p-2 rounded mt-2 text-sm">
-                {window.location.origin}/.netlify/functions/webhook
-              </code>
-              <p className="text-gray-600 mt-2">
-                Configure your Azure Function to forward WhatsApp webhooks to this URL. Make sure to:
-              </p>
-              <ul className="list-disc list-inside mt-1 text-gray-600">
-                <li>Set the WEBHOOK_SECRET environment variable in Netlify</li>
-                <li>Set the VERIFY_TOKEN environment variable in Netlify</li>
-                <li>Use the same tokens in your Azure Function configuration</li>
-              </ul>
+              <div className="flex items-center gap-2 bg-gray-100 p-2 rounded mt-2">
+                <code className="text-sm flex-1 break-all">
+                  {webhookUrl}
+                </code>
+                <button
+                  onClick={() => copyToClipboard(webhookUrl)}
+                  className="p-1.5 text-gray-500 hover:text-gray-700 rounded-md hover:bg-gray-200"
+                  title="Copy to clipboard"
+                >
+                  {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+                </button>
+              </div>
             </div>
           </div>
         </div>
 
-        {/* WhatsApp API Configuration Fields */}
+        {/* Token Configurations */}
+        <div className="mb-6">
+          <h2 className="text-lg font-semibold mb-4">Authentication Tokens</h2>
+          <div className="space-y-4">
+            {tokenConfigs.map((config) => {
+              const isSaving = savingStates[config.id] || false;
+              const isSuccess = saveSuccess[config.id] || false;
+              
+              return (
+                <div
+                  key={config.id}
+                  className="p-4 bg-white rounded-lg shadow"
+                >
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    {config.key}
+                  </label>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={config.value || ''}
+                      onChange={(e) => {
+                        setConfigs(prev => 
+                          prev.map(c => 
+                            c.id === config.id ? { ...c, value: e.target.value } : c
+                          )
+                        );
+                      }}
+                      className="flex-1 p-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-whatsapp"
+                      placeholder={config.description}
+                    />
+                    <button
+                      onClick={() => updateConfig(config.id, config.value || '')}
+                      disabled={isSaving}
+                      className="p-2 text-white bg-whatsapp rounded-md hover:bg-whatsapp-hover disabled:opacity-50 min-w-10"
+                    >
+                      {isSaving ? (
+                        <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                      ) : isSuccess ? (
+                        <Check className="w-5 h-5" />
+                      ) : (
+                        <Save className="w-5 h-5" />
+                      )}
+                    </button>
+                  </div>
+                  <p className="mt-1 text-sm text-gray-500">{config.description}</p>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Other Configurations */}
         <div className="space-y-4">
-          {configs.map((config) => {
+          <h2 className="text-lg font-semibold mb-4">Other Settings</h2>
+          {otherConfigs.map((config) => {
             const isSaving = savingStates[config.id] || false;
             const isSuccess = saveSuccess[config.id] || false;
             
