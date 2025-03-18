@@ -2,7 +2,6 @@ import type { Context } from "@netlify/functions";
 import { createClient } from '@supabase/supabase-js';
 import type { Database } from '../../src/lib/database.types';
 import { processWebhookEvent } from '../../src/lib/webhook';
-import type { WhatsAppWebhook } from '../../src/lib/webhook';
 
 // Create Supabase client with process.env instead of import.meta.env
 const supabaseUrl = process.env.VITE_SUPABASE_URL;
@@ -28,11 +27,22 @@ export default async (req: Request, context: Context) => {
       const token = url.searchParams.get('hub.verify_token');
       const challenge = url.searchParams.get('hub.challenge');
 
-      // Verify token from environment variable
-      const verifyToken = process.env.VERIFY_TOKEN;
+      // Fetch VERIFY_TOKEN from Supabase configurations
+      const { data: config, error } = await supabase
+        .from('configurations')
+        .select('value')
+        .eq('key', 'TOKEN_META')
+        .single();
+
+      if (error) {
+        console.error('Error fetching VERIFY_TOKEN:', error);
+        return new Response('Configuration Error', { status: 500 });
+      }
+
+      const verifyToken = config?.value;
       
       if (!verifyToken) {
-        console.error('VERIFY_TOKEN not configured');
+        console.error('TOKEN_META not configured in Supabase');
         return new Response('Configuration Error', { status: 500 });
       }
 
@@ -52,7 +62,7 @@ export default async (req: Request, context: Context) => {
     // Handle POST requests for webhook events
     if (req.method === 'POST') {
       try {
-        const body = await req.json() as WhatsAppWebhook;
+        const body = await req.json();
         const webhookSecret = process.env.WEBHOOK_SECRET;
         const providedSecret = req.headers.get('x-webhook-secret');
 
