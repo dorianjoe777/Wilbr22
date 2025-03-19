@@ -51,22 +51,29 @@ interface ProcessResult {
   error?: unknown;
 }
 
-async function sendWhatsAppMessage(phoneNumber: string, message: string) {
-  const { data: config } = await supabase
+async function sendWhatsAppMessage(phoneNumber: string, message: string, supabase: SupabaseClient<Database>) {
+  const { data: configs } = await supabase
     .from('configurations')
-    .select('value')
-    .in('key', ['API', 'ACCESS_TOKEN'])
-    .eq('key', 'ACCESS_TOKEN')
-    .single();
+    .select('key, value')
+    .in('key', ['API', 'ACCESS_TOKEN']);
 
-  if (!config?.value) {
-    throw new Error('WhatsApp access token not configured');
+  if (!configs) {
+    throw new Error('WhatsApp configuration not found');
   }
 
-  const response = await fetch(`https://graph.facebook.com/v17.0/YOUR_PHONE_NUMBER_ID/messages`, {
+  const configMap = configs.reduce((acc, item) => {
+    acc[item.key] = item.value;
+    return acc;
+  }, {} as Record<string, string>);
+
+  if (!configMap.API || !configMap.ACCESS_TOKEN) {
+    throw new Error('WhatsApp API URL or access token not configured');
+  }
+
+  const response = await fetch(configMap.API, {
     method: 'POST',
     headers: {
-      'Authorization': `Bearer ${config.value}`,
+      'Authorization': `Bearer ${configMap.ACCESS_TOKEN}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
@@ -177,7 +184,7 @@ async function processMessages(
       const gptResponse = await getChatGPTResponse(message.text?.body || '', supabase);
 
       // Send response via WhatsApp
-      await sendWhatsAppMessage(contact.phone_number, gptResponse);
+      await sendWhatsAppMessage(contact.phone_number, gptResponse, supabase);
 
       // Store the outgoing message
       await supabase
