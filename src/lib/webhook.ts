@@ -1,6 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { Database } from './database.types';
 import type { Chat, Contact } from './types';
+import { Configuration, OpenAIApi } from 'openai';
 
 export interface WhatsAppMessage {
   from: string;
@@ -10,43 +11,6 @@ export interface WhatsAppMessage {
   text?: {
     body: string;
   };
-  image?: {
-    id: string;
-    mime_type: string;
-    sha256: string;
-    caption?: string;
-  };
-  video?: {
-    id: string;
-    mime_type: string;
-    sha256: string;
-    caption?: string;
-  };
-  audio?: {
-    id: string;
-    mime_type: string;
-    sha256: string;
-  };
-  document?: {
-    id: string;
-    mime_type: string;
-    sha256: string;
-    filename: string;
-    caption?: string;
-  };
-  location?: {
-    latitude: number;
-    longitude: number;
-    name?: string;
-    address?: string;
-  };
-  contacts?: Array<{
-    phones: Array<{ phone: string }>;
-    name: {
-      first_name: string;
-      last_name?: string;
-    };
-  }>;
 }
 
 export interface WhatsAppContact {
@@ -87,9 +51,70 @@ interface ProcessResult {
   error?: unknown;
 }
 
-/**
- * Process incoming webhook events from WhatsApp Business API
- */
+async function sendWhatsAppMessage(phoneNumber: string, message: string) {
+  const { data: config } = await supabase
+    .from('configurations')
+    .select('value')
+    .in('key', ['API', 'ACCESS_TOKEN'])
+    .eq('key', 'ACCESS_TOKEN')
+    .single();
+
+  if (!config?.value) {
+    throw new Error('WhatsApp access token not configured');
+  }
+
+  const response = await fetch(`https://graph.facebook.com/v17.0/YOUR_PHONE_NUMBER_ID/messages`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${config.value}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      messaging_product: 'whatsapp',
+      to: phoneNumber,
+      type: 'text',
+      text: { body: message }
+    })
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to send WhatsApp message: ${response.statusText}`);
+  }
+
+  return response.json();
+}
+
+async function getChatGPTResponse(message: string, supabase: SupabaseClient<Database>) {
+  const { data: config } = await supabase
+    .from('configurations')
+    .select('value')
+    .in('key', ['TOKEN_CHATGPT', 'MODELO_CHATGPT', 'Entrenamiento'])
+    .execute();
+
+  if (!config || config.length === 0) {
+    throw new Error('ChatGPT configuration not found');
+  }
+
+  const configMap = config.reduce((acc, item) => {
+    acc[item.key] = item.value;
+    return acc;
+  }, {} as Record<string, string>);
+
+  const openai = new OpenAIApi(new Configuration({
+    apiKey: configMap.TOKEN_CHATGPT
+  }));
+
+  const response = await openai.createChatCompletion({
+    model: configMap.MODELO_CHATGPT || 'gpt-4',
+    messages: [
+      { role: 'system', content: configMap.Entrenamiento },
+      { role: 'user', content: message }
+    ]
+  });
+
+  return response.data.choices[0]?.message?.content || 'Lo siento, no pude procesar tu mensaje.';
+}
+
 export async function processWebhookEvent(
   event: WhatsAppWebhook,
   supabase: SupabaseClient<Database>
@@ -116,9 +141,6 @@ export async function processWebhookEvent(
   }
 }
 
-/**
- * Process incoming messages
- */
 async function processMessages(
   value: MessageValue,
   supabase: SupabaseClient<Database>
@@ -132,33 +154,51 @@ async function processMessages(
       const contact = await getOrCreateContact(message.from, contacts, supabase);
       if (!contact) continue;
 
-      // Process the message based on its type
-      const messageContent = await extractMessageContent(message);
-      
-      // Store the message
-      await supabase.from('chats').insert([{
-        contact_id: contact.id,
-        message: messageContent,
-        direction: 'incoming' as const,
-        status: 'delivered' as const,
-        message_id: message.id,
-        metadata: {
-          type: message.type,
-          timestamp: message.timestamp,
-          raw: message
-        }
-      }]);
+      // Store the incoming message
+      const { data: chatMessage } = await supabase
+        .from('chats')
+        .insert([{
+          contact_id: contact.id,
+          message: message.text?.body || '',
+          direction: 'incoming',
+          status: 'delivered',
+          message_id: message.id,
+          metadata: {
+            timestamp: message.timestamp,
+            type: message.type
+          }
+        }])
+        .select()
+        .single();
 
-      console.log(`Processed ${message.type} message from ${message.from}`);
+      if (!chatMessage) throw new Error('Failed to store incoming message');
+
+      // Get ChatGPT response
+      const gptResponse = await getChatGPTResponse(message.text?.body || '', supabase);
+
+      // Send response via WhatsApp
+      await sendWhatsAppMessage(contact.phone_number, gptResponse);
+
+      // Store the outgoing message
+      await supabase
+        .from('chats')
+        .insert([{
+          contact_id: contact.id,
+          message: gptResponse,
+          direction: 'outgoing',
+          status: 'sent',
+          metadata: {
+            timestamp: new Date().toISOString(),
+            type: 'text'
+          }
+        }]);
+
     } catch (error) {
       console.error(`Error processing message ${message.id}:`, error);
     }
   }
 }
 
-/**
- * Get or create a contact from the WhatsApp message
- */
 async function getOrCreateContact(
   phoneNumber: string,
   contacts: WhatsAppContact[],
@@ -204,55 +244,6 @@ async function getOrCreateContact(
   }
 }
 
-/**
- * Extract readable content from different message types
- */
-async function extractMessageContent(message: WhatsAppMessage): Promise<string> {
-  switch (message.type) {
-    case 'text':
-      return message.text?.body || '[Empty message]';
-    
-    case 'image':
-      return message.image?.caption || '[Image]';
-    
-    case 'video':
-      return message.video?.caption || '[Video]';
-    
-    case 'audio':
-      return '[Audio message]';
-    
-    case 'document':
-      return `[Document: ${message.document?.filename || 'Untitled'}]${
-        message.document?.caption ? ` - ${message.document.caption}` : ''
-      }`;
-    
-    case 'location':
-      if (message.location) {
-        const parts = [];
-        if (message.location.name) parts.push(message.location.name);
-        if (message.location.address) parts.push(message.location.address);
-        parts.push(`(${message.location.latitude}, ${message.location.longitude})`);
-        return `[Location: ${parts.join(' - ')}]`;
-      }
-      return '[Location]';
-    
-    case 'contacts':
-      if (message.contacts && message.contacts.length > 0) {
-        const contactNames = message.contacts.map(contact => 
-          `${contact.name.first_name} ${contact.name.last_name || ''}`
-        );
-        return `[Contacts: ${contactNames.join(', ')}]`;
-      }
-      return '[Contacts]';
-    
-    default:
-      return `[${message.type} message]`;
-  }
-}
-
-/**
- * Process message status updates
- */
 async function processStatusUpdates(
   value: MessageValue,
   supabase: SupabaseClient<Database>
@@ -261,29 +252,13 @@ async function processStatusUpdates(
 
   for (const status of statuses) {
     try {
-      // Find the message in our database using the WhatsApp message ID
-      const { data: message } = await supabase
-        .from('chats')
-        .select('id')
-        .eq('message_id', status.id)
-        .single();
-
-      if (!message) continue;
-
-      // Update the message status
-      let newStatus: Chat['status'] = 'sent';
-      if (status.status === 'delivered') newStatus = 'delivered';
-      if (status.status === 'read') newStatus = 'read';
-
       await supabase
         .from('chats')
         .update({ 
-          status: newStatus,
+          status: status.status as Chat['status'],
           updated_at: new Date().toISOString()
         })
-        .eq('id', message.id);
-
-      console.log(`Updated status for message ${status.id} to ${newStatus}`);
+        .eq('message_id', status.id);
     } catch (error) {
       console.error(`Error processing status update for message ${status.id}:`, error);
     }
